@@ -1,0 +1,65 @@
+flowchart TB
+    %% Raias representadas por subgraphs.
+    %% FORK e JOIN são barras visuais de divisão e sincronização do fluxo paralelo.
+
+    subgraph PJ["RAIA 1 — Empresa (PJ)"]
+        A([Início]) --> B[Informar CNPJ e dados cadastrais]
+        B --> C[Enviar cadastro e documento da LO]
+    end
+
+    subgraph AC["RAIA 2 — Componente de Acesso"]
+        D[Receber CadastroPJDTO e LicencaDTO]
+        E{Dados obrigatórios completos?}
+        F[Criar Empresa com status RASCUNHO]
+        G[Consolidar os resultados das consultas]
+        H{As duas consultas foram concluídas?}
+        I{CNPJ ativo e CNAE permitido?}
+        J{Resultado da validação da LO?}
+        K[Definir Empresa como APROVADA]
+        L[Registrar pendência para correção da LO]
+        M[Definir Empresa como REJEITADA]
+        N[Marcar cadastro como AGUARDANDO_VALIDACAO]
+        O[Solicitar correção dos dados]
+    end
+
+    subgraph EXT["RAIA 3 — Serviços externos"]
+        FORK["━━━━━━━━ FORK ━━━━━━━━"]
+        CNPJ[Consultar CNPJ e situação cadastral]
+        CNAE[Validar CNAE permitido]
+        CNPJF[Registrar falha temporária da consulta CNPJ]
+        DOC[Verificar integridade e dados do documento]
+        LO[Consultar situação da LO no provedor ambiental]
+        LOF[Registrar falha temporária da consulta LO]
+        JOIN["━━━━━━━━ JOIN ━━━━━━━━"]
+        FORK --> CNPJ --> CNAE --> JOIN
+        CNPJ -->|[Timeout / indisponibilidade]| CNPJF --> JOIN
+        FORK --> DOC --> LO --> JOIN
+        LO -->|[Timeout / indisponibilidade]| LOF --> JOIN
+    end
+
+    subgraph DATA["RAIA 4 — Persistência e Mensageria"]
+        P0[Persistir Empresa como RASCUNHO]
+        P1[Persistir Empresa aprovada e evento Outbox]
+        P2[Persistir pendência e evento Outbox]
+        P3[Persistir rejeição]
+        P4[Persistir status aguardando validação]
+        P5[Publicar evento via RabbitMQ]
+        P6[Enviar notificação assíncrona]
+    end
+
+    C --> D --> E
+    E -->|[Sim]| F --> P0 --> FORK
+    E -->|[Não]| O
+    JOIN --> G --> H
+    H -->|[Não]| N --> P4
+    H -->|[Sim]| I
+    I -->|[Não]| M --> P3
+    I -->|[Sim]| J
+    J -->|[LO válida e compatível]| K --> P1 --> P5 --> P6
+    J -->|[LO vencida ou incompleta]| L --> P2 --> P5
+    J -->|[LO cancelada ou fraudulenta]| M
+    P6 --> Z([Fim — cadastro aprovado])
+    P5 --> Z2([Fim — pendência ou rejeição comunicada])
+    P4 --> Z3([Fim — aguardando nova consulta])
+    P3 --> Z4([Fim — cadastro rejeitado])
+    O --> Z5([Fim — aguardando correção cadastral])

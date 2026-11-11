@@ -1,0 +1,40 @@
+stateDiagram-v2
+    direction TB
+
+    [*] --> Rascunho: iniciarCadastro()
+
+    state "Cadastro e validação cadastral" as Cadastro {
+        Rascunho --> DadosInformados: enviarDados()
+        DadosInformados --> EmValidacaoCadastral: validarCNPJ()
+        EmValidacaoCadastral --> CadastralValidado: resultadoCadastral [CNPJ_ATIVO && CNAE_PERMITIDO] / registrarValidacao()
+        EmValidacaoCadastral --> Rejeitada: resultadoCadastral [CNPJ_IRREGULAR || CNAE_PROIBIDO] / registrarRejeicao()
+        EmValidacaoCadastral --> CNPJValidacaoPendente: falhaIntegracao [timeout || provedorIndisponivel] / registrarFalhaTemporaria()
+        CNPJValidacaoPendente --> EmValidacaoCadastral: tentarNovamente() / repetirConsulta()
+    }
+
+    CadastralValidado --> AguardandoLO: solicitarLicenca()
+
+    state "Validação Ambiental" as Ambiental {
+        AguardandoLO --> LOEmAnalise: enviarLicenca()
+        LOEmAnalise: entry / iniciarValidacaoLO()
+        LOEmAnalise: do / consultarOrgaoAmbiental()
+        LOEmAnalise: exit / registrarResultado()
+        LOEmAnalise --> LOValidada: resultadoLO [LO_VALIDA && CNAE_COMPATIVEL] / registrarAprovacaoLO()
+        LOEmAnalise --> PendenteCorrecao: resultadoLO [LO_VENCIDA || LO_INCOMPLETA] / registrarPendencia()
+        PendenteCorrecao --> LOEmAnalise: reenviarLicenca() / reprocessarValidacao()
+        LOEmAnalise --> Rejeitada: resultadoLO [LO_CANCELADA || LO_FRAUDULENTA] / registrarRejeicao()
+        LOEmAnalise --> LOValidacaoPendente: falhaIntegracao [timeout || provedorIndisponivel] / registrarFalhaTemporaria()
+        LOValidacaoPendente --> LOEmAnalise: tentarNovamenteLO() / repetirConsultaLO()
+    }
+
+    LOValidada --> Aprovada: aprovarEmpresa() [cadastroCompleto] / liberarAcesso()
+
+    state "Empresa habilitada" as Habilitada {
+        Aprovada --> Suspensa: suspenderEmpresa() [irregularidadeConfirmada] / bloquearNegociacoes()
+        Suspensa --> Aprovada: regularizarEmpresa() [pendenciasResolvidas] / reativarNegociacoes()
+    }
+
+    PendenteCorrecao --> Encerrada: cancelarCadastro() / encerrarProcesso()
+    Rejeitada --> Encerrada: encerrarCadastro() / encerrarProcesso()
+    Aprovada --> Encerrada: encerrarEmpresa() / revogarAcesso()
+    Encerrada --> [*]

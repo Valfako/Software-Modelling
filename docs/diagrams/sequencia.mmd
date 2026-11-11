@@ -1,0 +1,96 @@
+sequenceDiagram
+    autonumber
+    actor PJ as Empresa (PJ)
+    participant AC as ComponenteAcesso
+    participant API as CadastroPJController
+    participant ES as EmpresaService
+    participant ER as EmpresaRepository
+    participant RF as ReceitaFederalClient
+    participant CNAE as CNAEPolicy
+    participant LS as LicencaAmbientalService
+    participant LR as LicencaAmbientalRepository
+    participant OA as OrgaoAmbientalClient
+    participant OR as OutboxRepository
+    participant EP as EventPublisher
+    participant MQ as RabbitMQ
+    participant NT as NotificationService
+
+    PJ->>AC: autenticar(CredenciaisDTO)
+    AC-->>PJ: SessaoDTO
+
+    PJ->>API: iniciarCadastro(CadastroPJDTO)
+    API->>ES: criarRascunho(CadastroPJDTO)
+    ES->>ER: salvar(Empresa)
+    ER-->>ES: EmpresaDTO
+    ES-->>API: EmpresaDTO
+
+    API->>RF: consultarCNPJ(CNPJ)
+    alt Consulta concluída
+        RF-->>API: ConsultaCNPJDTO
+        API->>CNAE: validarCNAE(ConsultaCNPJDTO)
+        CNAE-->>API: ResultadoCNAEDTO
+
+        alt CNPJ ativo e CNAE permitido
+            API->>ES: registrarDadosCadastrais(ResultadoCNAEDTO)
+            ES->>ER: atualizarDados(EmpresaDTO)
+            ER-->>ES: ConfirmacaoPersistenciaDTO
+            ES-->>API: EmpresaDTO
+
+            PJ->>API: enviarLicenca(LicencaDTO)
+            API->>LS: validarLicenca(LicencaDTO)
+            LS->>LR: salvar(LicencaAmbiental)
+            LR-->>LS: LicencaDTO
+            LS->>OA: consultarLO(ConsultaLORequestDTO)
+            OA-->>LS: ConsultaLOResponseDTO
+
+            alt LO válida e compatível
+                LS->>LR: atualizarStatus(VALIDA)
+                LR-->>LS: ConfirmacaoPersistenciaDTO
+                LS->>ES: aprovarEmpresa(EmpresaId)
+                ES->>ER: aprovarERegistrarOutbox(EmpresaId, EmpresaAprovadaEvent)
+                ER-->>ES: EmpresaDTO
+                ES-->>LS: EmpresaAprovadaDTO
+                LS-->>API: ResultadoValidacaoLODTO
+                API-->>PJ: CadastroAprovadoDTO
+            else LO vencida ou documentação incompleta
+                LS->>LR: atualizarStatus(PENDENTE_CORRECAO)
+                LS->>ES: registrarPendenciaAmbiental(EmpresaId, Motivo)
+                ES->>ER: registrarPendenciaEOutbox(EmpresaId, PendenciaAmbientalEvent)
+                ER-->>ES: ConfirmacaoPersistenciaDTO
+                ES-->>LS: PendenciaRegistradaDTO
+                LS-->>API: ResultadoValidacaoLODTO
+                API-->>PJ: CadastroPendenteDTO
+            else LO cancelada ou fraudulenta
+                LS->>LR: atualizarStatus(INVALIDA)
+                LS->>ES: rejeitarCadastro(EmpresaId, Motivo)
+                ES->>ER: atualizarStatus(REJEITADA)
+                ER-->>ES: ConfirmacaoPersistenciaDTO
+                ES-->>LS: CadastroRejeitadoDTO
+                LS-->>API: ResultadoValidacaoLODTO
+                API-->>PJ: CadastroRejeitadoDTO
+            end
+        else CNPJ irregular ou CNAE não permitido
+            API->>ES: rejeitarCadastro(EmpresaId, Motivo)
+            ES->>ER: atualizarStatus(REJEITADA)
+            ER-->>ES: ConfirmacaoPersistenciaDTO
+            ES-->>API: CadastroRejeitadoDTO
+            API-->>PJ: CadastroRejeitadoDTO
+        end
+    else Serviço de consulta indisponível ou timeout
+        RF-->>API: ErroIntegracaoDTO
+        API->>ES: marcarValidacaoPendente(EmpresaId, Motivo)
+        ES->>ER: atualizarStatus(AGUARDANDO_VALIDACAO)
+        ER-->>ES: ConfirmacaoPersistenciaDTO
+        ES-->>API: CadastroPendenteValidacaoDTO
+        API-->>PJ: CadastroPendenteValidacaoDTO
+    end
+
+    Note over OR,EP: Publicação fora da requisição HTTP usando o padrão Outbox
+    EP->>OR: buscarEventosPendentes()
+    OR-->>EP: ListaEventosDTO
+    loop Para cada evento pendente
+        EP-)MQ: publicar(evento)
+        EP->>OR: marcarComoPublicado(EventoId)
+        OR-->>EP: ConfirmacaoPersistenciaDTO
+    end
+    MQ-)NT: consumirEvento(EventoCadastroDTO)
